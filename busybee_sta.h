@@ -94,6 +94,8 @@ class busybee_sta
         int add_descriptor(int fd);
         void postpone_event(channel* chan);
         int receive_event(int*fd, uint32_t* events);
+        int add_event(int fd, uint32_t events);
+        int wait_event(int*fd, uint32_t* events);
         // Accept a new socket, and return the file descriptor number.
         int work_accept();
         // Remove the channel and set the resources to be freed.

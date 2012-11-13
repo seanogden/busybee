@@ -78,6 +78,8 @@ class busybee_st
                                        uint32_t* chantag);
         int add_descriptor(int fd);
         void postpone_event(channel* chan);
+        int add_event(int fd, uint32_t events);
+        int wait_event(int*fd, uint32_t* events);
         int receive_event(int*fd, uint32_t* events);
         // Remove the channel and set the resources to be freed.
         void work_close(channel* chan);

@@ -25,10 +25,8 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef busybee_constants_h_
-#define busybee_constants_h_
-
-#define __STDC_LIMIT_MACROS
+#ifndef busybee_events_h_ 
+#define busybee_events_h_ 
 
 // C
 #include <stdint.h>
@@ -36,21 +34,20 @@
 #define BUSYBEE_HEADER_SIZE sizeof(uint32_t)
 #define BUSYBEE_MAX_MSG_SIZE UINT32_MAX
 
-enum busybee_constants
+#ifdef LINUX
+enum busybe_events
 {
-    BUSYBEE_E_IN = 1,
-    BUSYBEE_E_OUT 
+    BUSYBEE_IN = EPOLLIN,
+    BUSYBEE_PRI = EPOLLPRI,
+    BUSYBEE_OUT = EPOLLOUT 
 };
-
-#ifndef LINUX
-enum epoll_events 
+#else
+enum busybee_events
 {
-    EPOLLIN = 1,
-    EPOLLOUT = 2,
-    EPOLLET = 4,
-    EPOLLERR = 8,
-    EPOLLHUP = 16
+    BUSYBEE_IN = 1,
+    BUSYBEE_PRI = 2, 
+    BUSYBEE_OUT = 4 
 };
-#endif
+#endif //LINUX
 
-#endif // busybee_constants_h_
+#endif // busybee_events_h_ 

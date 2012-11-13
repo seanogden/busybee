@@ -32,7 +32,12 @@
 #define __STDC_LIMIT_MACROS
 
 // Linux
-#include <sys/epoll.h>
+#ifdef LINUX
+  #include <sys/epoll.h>
+#else
+  #include <sys/event.h>
+  #include <sys/time.h>
+#endif
 
 // po6
 #include <po6/net/socket.h>
@@ -113,6 +118,12 @@
 #define CONCAT(X, Y) _CONCAT(X, Y)
 
 #define CLASSNAME CONCAT(busybee_, BUSYBEE_TYPE)
+
+#ifdef LINUX
+#define EPOLL_CREATE(N) epoll_create(N)
+#else
+#define EPOLL_CREATE(N) kqueue()
+#endif
 
 // Some Constants
 #define IO_BLOCKSIZE 4096
@@ -247,14 +258,14 @@ busybee_mta :: busybee_mta(const po6::net::ipaddr& ip,
                            in_port_t incoming,
                            in_port_t outgoing,
                            size_t num_threads)
-    : m_epoll(epoll_create(1 << 16))
+    : m_epoll(EPOLL_CREATE(1 << 16))
     , m_listen(ip.family(), SOCK_STREAM, IPPROTO_TCP)
     , m_bindto(ip, outgoing)
     , m_connectlocks(num_threads * 4)
     , m_locations(16)
-    , m_incoming(e::next_pow2(num_threads * NUM_MSGS_PER_RECV))
+    , m_incoming(e::next_pow2((uint64_t)num_threads * NUM_MSGS_PER_RECV))
     , m_channels(sysconf(_SC_OPEN_MAX))
-    , m_postponed(e::next_pow2(m_channels.size() * 2))
+    , m_postponed(e::next_pow2((uint64_t)m_channels.size() * 2))
     , m_pause_barrier(num_threads)
     , m_timeout(-1)
     , m_external_fd(0)
@@ -298,12 +309,8 @@ busybee_mta :: busybee_mta(const po6::net::ipaddr& ip,
     }
 
     m_bindto = chan->soc.getsockname();
-
-    epoll_event ee;
-    ee.data.fd = m_listen.get();
-    ee.events = EPOLLIN;
-
-    if (epoll_ctl(m_epoll.get(), EPOLL_CTL_ADD, m_listen.get(), &ee) < 0)
+   
+    if (add_event(m_listen.get(),EPOLLIN) < 0)
     {
         throw po6::error(errno);
     }
@@ -314,13 +321,13 @@ busybee_mta :: busybee_mta(const po6::net::ipaddr& ip,
 busybee_sta :: busybee_sta(const po6::net::ipaddr& ip,
                            in_port_t incoming,
                            in_port_t outgoing)
-    : m_epoll(epoll_create(1 << 16))
+    : m_epoll(EPOLL_CREATE(1 << 16))
     , m_listen(ip.family(), SOCK_STREAM, IPPROTO_TCP)
     , m_bindto(ip, outgoing)
     , m_locations(16)
-    , m_incoming(e::next_pow2(NUM_MSGS_PER_RECV))
+    , m_incoming(e::next_pow2((uint64_t)NUM_MSGS_PER_RECV))
     , m_channels(sysconf(_SC_OPEN_MAX))
-    , m_postponed(e::next_pow2(m_channels.size() * 2))
+    , m_postponed(e::next_pow2((uint64_t)m_channels.size() * 2))
     , m_timeout(-1)
     , m_external_fd(0)
     , m_external_events(0)
@@ -363,11 +370,7 @@ busybee_sta :: busybee_sta(const po6::net::ipaddr& ip,
 
     m_bindto = chan->soc.getsockname();
 
-    epoll_event ee;
-    ee.data.fd = m_listen.get();
-    ee.events = EPOLLIN;
-
-    if (epoll_ctl(m_epoll.get(), EPOLL_CTL_ADD, m_listen.get(), &ee) < 0)
+    if (add_event(m_listen.get(),EPOLLIN) < 0)
     {
         throw po6::error(errno);
     }
@@ -376,11 +379,11 @@ busybee_sta :: busybee_sta(const po6::net::ipaddr& ip,
 
 #ifdef BUSYBEE_ST
 busybee_st :: busybee_st()
-    : m_epoll(epoll_create(1 << 16))
+    : m_epoll(EPOLL_CREATE(1 << 16))
     , m_locations(16)
-    , m_incoming(e::next_pow2(NUM_MSGS_PER_RECV))
+    , m_incoming(e::next_pow2((uint64_t)NUM_MSGS_PER_RECV))
     , m_channels(sysconf(_SC_OPEN_MAX))
-    , m_postponed(e::next_pow2(m_channels.size() * 2))
+    , m_postponed(e::next_pow2((uint64_t)m_channels.size() * 2))
     , m_timeout(-1)
     , m_external_fd(0)
     , m_external_events(0)
@@ -436,6 +439,32 @@ CLASSNAME :: set_timeout(int timeout)
 }
 
 int
+CLASSNAME :: add_event(int fd, uint32_t events)
+{
+#ifdef LINUX
+  epoll_event ee;
+  ee.data.fd = fd;
+  ee.events = events;
+  return epoll_ctl(m_epoll.get(), EPOLL_CTL_ADD, fd, &ee);
+#else
+  int flags = (events & EPOLLET) ? EV_ADD | EV_CLEAR : EV_ADD;
+  int n = 0;
+  struct kevent ee[2];
+  if(events & EPOLLIN)
+  {
+    EV_SET(ee, fd, EVFILT_READ, flags, 0, 0, NULL);
+    ++n;
+  } 
+  if(events & EPOLLOUT)
+  {
+    EV_SET(&ee[n], fd, EVFILT_WRITE, flags, 0, 0, NULL);
+    ++n;
+  }
+  return kevent(m_epoll.get(), ee, n, NULL, 0, NULL);
+#endif
+}
+
+int
 CLASSNAME :: add_external_fd(int fd, uint32_t events)
 {
     assert(fd > 0);
@@ -444,10 +473,7 @@ CLASSNAME :: add_external_fd(int fd, uint32_t events)
 #endif // BUSYBEE_MULTITHREADED
     work_close(m_channels[fd].get());
     m_channels[fd]->tag = -1;
-    epoll_event ee;
-    ee.data.fd = fd;
-    ee.events = events;
-    return epoll_ctl(m_epoll.get(), EPOLL_CTL_ADD, fd, &ee);
+    return (add_event(fd, events) < 0);
 }
 
 void
@@ -779,10 +805,7 @@ CLASSNAME :: get_channel(po6::net::socket* soc, channel** ret, uint32_t* chantag
 int
 CLASSNAME :: add_descriptor(int fd)
 {
-    epoll_event ee;
-    ee.data.fd = fd;
-    ee.events = EPOLLIN|EPOLLOUT|EPOLLET;
-    return epoll_ctl(m_epoll.get(), EPOLL_CTL_ADD, fd, &ee);
+    return add_event(fd,EPOLLIN|EPOLLOUT|EPOLLET);
 }
 
 void
@@ -805,7 +828,43 @@ CLASSNAME :: postpone_event(channel* chan)
 }
 
 int
-CLASSNAME :: receive_event(int*fd, uint32_t* events)
+CLASSNAME :: wait_event(int* fd, uint32_t* events)
+{
+#ifdef LINUX
+    epoll_event ee;
+    int ret = epoll_wait(m_epoll.get(), &ee, 1, m_timeout < 0 ? 50 : m_timeout);
+    *fd = ee.data.fd;
+    *events = ee.events;
+    return ret;
+#else
+    struct kevent ee;
+    struct timespec to = {0,0}; 
+    if (m_timeout < 0) 
+        to.tv_nsec = 50000;
+    else
+        to.tv_nsec = m_timeout * 1000;
+
+    int ret = kevent(m_epoll.get(), NULL, 0, &ee, 1, &to);
+    *fd = ee.ident;
+
+    switch(ee.filter)
+    {
+        case EVFILT_READ:
+            *events = EPOLLIN;
+            break;
+        case EVFILT_WRITE:
+            *events = EPOLLOUT;
+            break;
+        default:
+            *events = EPOLLERR;
+    }
+
+    return ret;
+#endif
+}
+
+int
+CLASSNAME :: receive_event(int* fd, uint32_t* events)
 {
     pending p;
 
@@ -816,10 +875,7 @@ CLASSNAME :: receive_event(int*fd, uint32_t* events)
         return 1;
     }
 
-    epoll_event ee;
-    int ret = epoll_wait(m_epoll.get(), &ee, 1, m_timeout < 0 ? 50 : m_timeout);
-    *fd = ee.data.fd;
-    *events = ee.events;
+    int ret = wait_event(fd, events);
     return ret;
 }
 
