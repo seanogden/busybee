@@ -28,7 +28,9 @@
 #ifndef busybee_constants_h_
 #define busybee_constants_h_
 
+#ifndef __STDC_LIMIT_MACROS
 #define __STDC_LIMIT_MACROS
+#endif
 
 // C
 #include <stdint.h>
@@ -42,7 +44,7 @@ enum busybee_constants
     BUSYBEE_E_OUT 
 };
 
-#ifndef LINUX
+#ifndef HAVE_EPOLL_CTL 
 enum epoll_events 
 {
     EPOLLIN = 1,

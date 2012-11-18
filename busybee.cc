@@ -29,15 +29,17 @@
 # include "config.h"
 #endif
 
+#ifndef __STDC_LIMIT_MACROS
 #define __STDC_LIMIT_MACROS
+#endif
 
 // Linux
-#ifdef LINUX
-  #include <sys/epoll.h>
-  #include <sys/eventfd.h>
+#ifdef HAVE_EPOLL_CTL
+#include <sys/epoll.h>
+#elif defined HAVE_KQUEUE 
+#include <sys/event.h>
 #else
-  #include <sys/event.h>
-  #include <sys/time.h>
+#error no_event
 #endif
 
 // po6
@@ -121,10 +123,12 @@
 
 #define CLASSNAME CONCAT(busybee_, BUSYBEE_TYPE)
 
-#ifdef LINUX
+#ifdef HAVE_EPOLL_CTL 
 #define EPOLL_CREATE(N) epoll_create(N)
-#else
+#elif HAVE_KQUEUE
 #define EPOLL_CREATE(N) kqueue()
+#else
+#error no_events
 #endif
 
 // Some Constants
@@ -261,7 +265,8 @@ busybee_mta :: busybee_mta(const po6::net::ipaddr& ip,
                            in_port_t outgoing,
                            size_t num_threads)
     : m_epoll(EPOLL_CREATE(1 << 16))
-    , m_eventfd(eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE))
+    , m_eventfdread()
+    , m_eventfdwrite()
     , m_listen(ip.family(), SOCK_STREAM, IPPROTO_TCP)
     , m_bindto(ip, outgoing)
     , m_connectlocks(num_threads * 4)
@@ -285,10 +290,15 @@ busybee_mta :: busybee_mta(const po6::net::ipaddr& ip,
         throw po6::error(errno);
     }
 
-    if (m_eventfd.get() < 0)
+    int eventfd[2];
+
+    if (pipe(eventfd) < 0)
     {
         throw po6::error(errno);
     }
+
+    m_eventfdread = eventfd[0];
+    m_eventfdwrite = eventfd[1];
 
     for (size_t i = 0; i < m_channels.size(); ++i)
     {
@@ -327,7 +337,7 @@ busybee_mta :: busybee_mta(const po6::net::ipaddr& ip,
         throw po6::error(errno);
     }
 
-    if (add_event(m_eventfd.get(),EPOLLIN) < 0)
+    if (add_event(m_eventfdread.get(),EPOLLIN) < 0)
     {
         throw po6::error(errno);
     }
@@ -463,16 +473,20 @@ CLASSNAME :: set_timeout(int timeout)
     m_timeout = timeout;
 }
 
+#ifdef HAVE_EPOLL_CTL 
 int
 CLASSNAME :: add_event(int fd, uint32_t events)
 {
-#ifdef LINUX
   epoll_event ee;
   memset(&ee, 0, sizeof(ee));
   ee.data.fd = fd;
   ee.events = events;
   return epoll_ctl(m_epoll.get(), EPOLL_CTL_ADD, fd, &ee);
-#else
+}
+#elif defined HAVE_KQUEUE
+int
+CLASSNAME :: add_event(int fd, uint32_t events)
+{
   int flags = (events & EPOLLET) ? EV_ADD | EV_CLEAR : EV_ADD;
   int n = 0;
   struct kevent ee[2];
@@ -489,8 +503,8 @@ CLASSNAME :: add_event(int fd, uint32_t events)
     ++n;
   }
   return kevent(m_epoll.get(), ee, n, NULL, 0, NULL);
-#endif
 }
+#endif
 
 int
 CLASSNAME :: add_external_fd(int fd, uint32_t events)
@@ -669,12 +683,12 @@ CLASSNAME :: recv(po6::net::location* from,
         }
 
 #ifdef BUSYBEE_MULTITHREADED
-        if (fd == m_eventfd.get())
+        if (fd == m_eventfdread.get())
         {
             if ((events & EPOLLIN))
             {
                 char buf[8];
-                m_eventfd.read(buf, 8);
+                m_eventfdread.read(buf, 8);
                 need_to_pause = true;
                 __sync_synchronize();
                 continue;
@@ -889,16 +903,20 @@ CLASSNAME :: postpone_event(channel* chan)
     }
 }
 
+#ifdef HAVE_EPOLL_CTL
 int
 CLASSNAME :: wait_event(int* fd, uint32_t* events)
 {
-#ifdef LINUX
     epoll_event ee;
     int ret = epoll_wait(m_epoll.get(), &ee, 1, m_timeout);
     *fd = ee.data.fd;
     *events = ee.events;
     return ret;
-#else
+}
+#elif HAVE_KQUEUE
+int
+CLASSNAME :: wait_event(int* fd, uint32_t* events)
+{
     struct kevent ee;
     struct timespec to = {0,0}; 
     if (m_timeout < 0) 
@@ -922,8 +940,8 @@ CLASSNAME :: wait_event(int* fd, uint32_t* events)
     }
 
     return ret;
-#endif
 }
+#endif
 
 int
 CLASSNAME :: receive_event(int* fd, uint32_t* events)
@@ -947,7 +965,7 @@ CLASSNAME :: up_the_semaphore()
 {
     __sync_synchronize();
     uint64_t num = m_pause_count;
-    ssize_t ret = m_eventfd.write(&num, sizeof(num));
+    ssize_t ret = m_eventfdwrite.write(&num, sizeof(num));
     assert(ret == sizeof(num));
 }
 #endif // BUSYBEE_MULTITHREADED
