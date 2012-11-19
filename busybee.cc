@@ -341,6 +341,13 @@ busybee_mta :: busybee_mta(const po6::net::ipaddr& ip,
     {
         throw po6::error(errno);
     }
+
+    m_pipebuf = (char *) malloc(num_threads);
+
+    if (m_pipebuf == NULL)
+    {
+        throw po6::error(errno);
+    }
 }
 #endif // mta
 
@@ -687,8 +694,8 @@ CLASSNAME :: recv(po6::net::location* from,
         {
             if ((events & EPOLLIN))
             {
-                char buf[8];
-                m_eventfdread.read(buf, 8);
+                char buf;
+                m_eventfdread.read(&buf, 1);
                 need_to_pause = true;
                 __sync_synchronize();
                 continue;
@@ -964,9 +971,8 @@ void
 CLASSNAME :: up_the_semaphore()
 {
     __sync_synchronize();
-    uint64_t num = m_pause_count;
-    ssize_t ret = m_eventfdwrite.write(&num, sizeof(num));
-    assert(ret == sizeof(num));
+    ssize_t ret = m_eventfdwrite.write(&m_pipebuf, m_pause_count);
+    assert(ret == 1);
 }
 #endif // BUSYBEE_MULTITHREADED
 

@@ -152,6 +152,7 @@ class busybee_mta
         po6::io::fd m_epoll;
         po6::io::fd m_eventfdread;
         po6::io::fd m_eventfdwrite;
+        char* m_pipebuf;
         po6::net::socket m_listen;
         po6::net::location m_bindto;
         e::striped_lock<po6::threads::mutex> m_connectlocks;
